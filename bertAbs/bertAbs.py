@@ -3,7 +3,7 @@ import random
 import torch
 import torch.nn as nn
 from fairseq.data.data_utils import collate_tokens
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, AdamW, BertTokenizer
 from models.modeling_bertabs import BertAbs, BertSumOptimizer, build_predictor
 from tqdm import tqdm, trange
 from transformers import get_linear_schedule_with_warmup
@@ -15,25 +15,40 @@ LIL_BATCH_SIZE = 1
 
 
 class BERTABS:
-    def __init__(self):
+    def __init__(self, device):
         self.tokenizer = AutoTokenizer.from_pretrained('allenai/scibert_scivocab_uncased')
-
+        # self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", do_lower_case=True)
         self.bertAbs = BertAbs.from_pretrained('bertabs-finetuned-cnndm')
-        # self.bertAbs.bert = AutoModel.from_pretrained('allenai/scibert_scivocab_uncased')
+        self.bertAbs.bert = AutoModel.from_pretrained('allenai/scibert_scivocab_uncased')
+        self.bertAbs.decoder.embeddings = self.bertAbs.bert.embeddings.word_embeddings
+        self.bertAbs.generator[0].weight = self.bertAbs.decoder.embeddings.weight
+        self.bertAbs.generator[0].bias = nn.Parameter(torch.randn(31090))
 
         self._optimizer = None
-        self._enc_lr_scheduler = None
-        self._dec_lr_scheduler = None
+        self._lr_scheduler = None
 
         self._best_dev_loss = None
 
         self._dataset = {}
 
-        self._device = 'cpu'
+        self._device = device
 
-    def get_optimizer(self, train_steps, warmup_steps):
-        lr = {"encoder": 2e-3, "decoder": 0.1}
-        self._optimizer = BertSumOptimizer(self.bertAbs, lr, warmup_steps)
+    def get_optimizer(self, lr, train_steps, warmup_steps,
+                      weight_decay, adam_epsilon):
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {"params": [p for n, p in self.bertAbs.named_parameters()
+                        if not any(nd in n for nd in no_decay)],
+             "weight_decay": weight_decay},
+            {"params": [p for n, p in self.bertAbs.named_parameters()
+                        if any(nd in n for nd in no_decay)],
+             "weight_decay": 0.0}]
+        self._optimizer = AdamW(
+            optimizer_grouped_parameters, lr=lr, eps=adam_epsilon)
+        self._lr_scheduler = get_linear_schedule_with_warmup(
+            self._optimizer, num_warmup_steps=warmup_steps,
+            num_training_steps=train_steps)
+        lr = {'encoder': 0.002, 'decoder': 0.2}
 
     def load_data(self, set_type, src_texts, tgt_texts):
         assert len(src_texts) == len(tgt_texts)
@@ -62,7 +77,9 @@ class BERTABS:
         print(f'Model {path} loaded.')
 
     def _get_seq2seq_loss(self, src_lengths, src_tokens, tgt_tokens):
-        raw_out = self.bertAbs(src_tokens, tgt_tokens, None, None, None)  # B x Sequence_len x 768
+        raw_out = self.bertAbs(src_tokens.to(self._device),
+                               tgt_tokens.to(self._device),
+                               None, None, None)  # B x Sequence_len x 768
         logits = self.bertAbs.generator(raw_out)
 
         tgt_tokens = tgt_tokens.to(logits.device)
@@ -86,6 +103,7 @@ class BERTABS:
         for i in trange(0, len(self._dataset['train']), batch_size,
                         desc='BERTABS Training'):
 
+            self.bertAbs = self.bertAbs.to(self._device)
             self.bertAbs.train()
 
             # self._dataset['train'] is a list of tuple
@@ -113,6 +131,7 @@ class BERTABS:
                 loss.backward()
 
             self._optimizer.step()
+            self._lr_scheduler.step()
 
     def evaluate(self):
         assert 'val' in self._dataset

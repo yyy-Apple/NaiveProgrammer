@@ -1,13 +1,19 @@
 import fire
-
+import torch
 from bertAbs import BERTABS
+import os
+import sys
 
-
-BATCH_SIZE = 5
+BATCH_SIZE = 32
 LR = 4e-5
 ADAM_EPSILON = 1e-8
 WEIGHT_DECAY = 0.
 WARMUP_PROPORTION = 0.1
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ['CUDA_VISIBLE_DEVICES'] = "2,3"
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def load_data(split):
@@ -20,9 +26,10 @@ def load_data(split):
     return src_texts, tgt_texts
 
 
-def main(n_epochs=5):
-    bertAbs = BERTABS()
-
+def main(n_epochs=1):
+    bertAbs = BERTABS(device=device)
+    print(bertAbs.bertAbs.bert.embeddings.word_embeddings)
+    print(bertAbs.bertAbs.decoder.embeddings)
     for split in ['train', 'val']:
         src_texts, tgt_texts = load_data(split)
         bertAbs.load_data(
@@ -31,9 +38,13 @@ def main(n_epochs=5):
             tgt_texts=tgt_texts)
 
     train_steps = n_epochs * (len(bertAbs.train_dataset) // BATCH_SIZE + 1)
-    warmup = int(train_steps * WARMUP_PROPORTION)
-    warmup_steps = {'encoder': warmup, 'decoder': warmup}
-    bertAbs.get_optimizer(train_steps, warmup_steps)
+    warmup_steps = int(train_steps * WARMUP_PROPORTION)
+    bertAbs.get_optimizer(
+        lr=LR,
+        train_steps=train_steps,
+        warmup_steps=warmup_steps,
+        weight_decay=WEIGHT_DECAY,
+        adam_epsilon=ADAM_EPSILON)
 
     best_loss = 1e9
 
