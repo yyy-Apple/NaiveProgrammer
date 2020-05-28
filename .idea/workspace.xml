@@ -2,9 +2,8 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="11624af9-b4d5-4da5-9b72-a8a0db1092cf" name="Default Changelist" comment="">
-      <change afterPath="$PROJECT_DIR$/bart/bart_finetune.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/bart/bart_gen.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/bart/models/bart.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/bart/models/bart.py" beforeDir="false" afterPath="$PROJECT_DIR$/bart/models/bart.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -45,7 +44,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1589844754734</updated>
-      <workItem from="1589844759127" duration="857000" />
+      <workItem from="1589844759127" duration="1569000" />
     </task>
     <servers />
   </component>
