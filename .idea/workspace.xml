@@ -2,8 +2,9 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="11624af9-b4d5-4da5-9b72-a8a0db1092cf" name="Default Changelist" comment="">
+      <change afterPath="$PROJECT_DIR$/long_bart/bart.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/long_bart/multigpu_utils.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/bart/models/bart.py" beforeDir="false" afterPath="$PROJECT_DIR$/bart/models/bart.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -32,7 +33,12 @@
   <component name="PropertiesComponent">
     <property name="RunOnceActivity.ShowReadmeOnStart" value="true" />
     <property name="WebServerToolWindowFactoryState" value="false" />
-    <property name="last_opened_file_path" value="$PROJECT_DIR$" />
+    <property name="last_opened_file_path" value="$PROJECT_DIR$/long_bart" />
+  </component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/long_bart" />
+    </key>
   </component>
   <component name="SvnConfiguration">
     <configuration />
@@ -45,6 +51,7 @@
       <option name="presentableId" value="Default" />
       <updated>1589844754734</updated>
       <workItem from="1589844759127" duration="1569000" />
+      <workItem from="1593871570616" duration="158000" />
     </task>
     <servers />
   </component>
