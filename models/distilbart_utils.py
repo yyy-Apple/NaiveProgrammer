@@ -1,13 +1,7 @@
-import copy
-import math
-from collections import namedtuple
-import torch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import BartTokenizer, BartForConditionalGeneration, BartConfig
-
-model = BartForConditionalGeneration.from_pretrained('sshleifer/distilbart-cnn-12-6')
+from transformers import BartTokenizer, BartForConditionalGeneration
 import random
 
 
@@ -59,7 +53,7 @@ class BARTMultiGPUWrapper(nn.Module):
         self.encoder.to(self._device_encoder1)
         self.decoder.to(self._device_decoder1)
 
-        # we shard the second half of encoder and decoder into another gpu if possible
+        # we shard the second half of encoder and decoder into other gpus if possible
         encoder_layer_num = len(self.encoder.layers)
         for i in range(encoder_layer_num):
             if i >= (encoder_layer_num // 2):
@@ -74,6 +68,11 @@ class BARTMultiGPUWrapper(nn.Module):
         if self.decoder.layer_norm:
             self.decoder.layer_norm.to(self._device_decoder2)
 
+        # for calculating lm logits
+        self._interface.final_logits_bias = move_device(
+            self._interface.final_logits_bias, self._device_decoder2)
+        self.model.shared = move_device(self.model.shared, self._device_decoder2)
+
         torch.cuda.empty_cache()
 
         # set mode
@@ -85,19 +84,24 @@ class BARTMultiGPUWrapper(nn.Module):
         self._mode = mode
 
     def encode(self, sentence, max_length=1024):
-        tokens = self._tokenizer([sentence], return_tensors='pt')['input_ids'][0].tolist()
-        while len(tokens) > max_length:
-            # cut sentence to max length, keep the eos token
-            tokens = tokens[:-2] + tokens[-1:]
-        return torch.tensor(tokens).long()
+        # tokens = self._tokenizer([sentence], return_tensors='pt')['input_ids'][0].tolist()
+        # while len(tokens) > max_length:
+        #     # cut sentence to max length, keep the eos token
+        #     tokens = tokens[:-2] + tokens[-1:]
+        # return torch.tensor(tokens).long()
+
+        return self._tokenizer([sentence], max_length=max_length,
+                               truncation=True, return_tensors='pt')['input_ids']
 
     def encode_long(self, sentence):
         """ encode full text """
         # TODO: Finish this method
+        return_list = []
+        token_list = self._tokenizer([sentence], return_tensors='pt')['input_ids'][0].tolist()
         pass
 
     def forward(self, src_tokens, prev_output_tokens):
-        attention_mask = src_tokens.eq(self.config.pad_token_id)
+        attention_mask = src_tokens.ne(self.config.pad_token_id)
 
         _, decoder_padding_mask, causal_mask = _prepare_bart_decoder_inputs(
             config=self.config,
@@ -106,23 +110,28 @@ class BARTMultiGPUWrapper(nn.Module):
             causal_mask_dtype=self.model.shared.weight.dtype,
         )
 
-        encoder_out, _, _ = forward_encoder(self=self.encoder,
-                                            src_tokens=src_tokens,
-                                            attention_mask=attention_mask)
+        encoder_out, _, _ = forward_encoder(
+            self=self.encoder,
+            src_tokens=src_tokens,
+            attention_mask=attention_mask
+        )
 
-        print("encoder_out: ", encoder_out)
-        print(encoder_out.shape)
-        x, _, _, _ = forward_decoder(self=self.decoder,
-                                     tgt_tokens=prev_output_tokens,
-                                     encoder_hidden_states=encoder_out,
-                                     encoder_padding_mask=attention_mask,
-                                     decoder_padding_mask=decoder_padding_mask,
-                                     decoder_causal_mask=causal_mask)
-        print("x: ", x)
-        print(x.shape)
+        x, _, _ = forward_decoder(
+            self=self.decoder,
+            tgt_tokens=prev_output_tokens,
+            encoder_hidden_states=encoder_out,
+            encoder_padding_mask=attention_mask,
+            decoder_padding_mask=decoder_padding_mask,
+            decoder_causal_mask=causal_mask
+        )
+
         lm_logits = F.linear(x, self.model.shared.weight, bias=self._interface.final_logits_bias)
 
         return lm_logits
+
+    @property
+    def generate(self):
+        return self._interface.generate
 
     @property
     def config(self):
@@ -140,6 +149,10 @@ class BARTMultiGPUWrapper(nn.Module):
     def decoder(self):
         return self._interface.model.decoder
 
+    @property
+    def tokenizer(self):
+        return self._tokenizer
+
 
 def invert_mask(attention_mask):
     """Turns 1->0, 0->1, False->True, True-> False"""
@@ -147,18 +160,20 @@ def invert_mask(attention_mask):
     return attention_mask.eq(0)
 
 
-def forward_embedding(self,
-                      src_tokens,
-                      device_encoder):
-    """ Embed the tokens, here the device_encoder is the device of
+def forward_embedding(self, tokens):
+    """ Embed the tokens, here the device is the device of
         first half of encoder"""
-    inputs_embeds = self.embed_tokens(src_tokens.to(device_encoder)) \
+    inputs_embeds = self.embed_tokens(tokens.to(self.embed_tokens.weight.device)) \
                     * self.embed_scale
-    embed_pos = self.embed_positions(src_tokens.to(device_encoder))
+    embed_pos = self.embed_positions(tokens.to(self.embed_positions.weight.device))
+
+    inputs_embeds = move_device(inputs_embeds, embed_pos.device)
     x = inputs_embeds + embed_pos
+
+    x = move_device(x, self.layernorm_embedding.weight.device)
     x = self.layernorm_embedding(x)
+
     x = F.dropout(x, p=self.dropout, training=self.training)
-    print("after embed: ", x)
     return x
 
 
@@ -172,7 +187,6 @@ def forward_encoder(self,
         self: In the model, self is self.encoder
         src_tokens (LongTensor): tokens in the source language of shape
             `(batch, src_len)`
-        device_encoder: device of the second half of encoder
         attention_mask (torch.LongTensor): indicating which indices are padding tokens.
     Returns:
         Tuple comprised of:
@@ -190,35 +204,29 @@ def forward_encoder(self,
         attention_mask = invert_mask(attention_mask)
 
     # B x T x C -> T x B x C
-    x = forward_embedding(
-        self=self,
-        src_tokens=src_tokens,
-        device_encoder=self.embed_tokens.weight.device
-    )
+    x = forward_embedding(self=self, tokens=src_tokens)
     x = x.transpose(0, 1)
 
     encoder_states, all_attentions = [], []
-    for i, encoder_layer in enumerate(self.layers):
+    for idx, encoder_layer in enumerate(self.layers):
         # first half and second half of encoder not on the same device
-        print(f"we are forward the {i} th layer")
-        x = x.to(encoder_layer.fc1.weight.device)
+        current_device = encoder_layer.fc1.weight.device
+        x = move_device(x, current_device)
+        attention_mask = move_device(attention_mask, current_device)
         if output_hidden_states:
             encoder_states.append(x)
         # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
         dropout_probability = random.uniform(0, 1)
         if self.training and (dropout_probability < self.layerdrop):  # skip the layer
-            print("we skip this layer")
             attn = None
         else:
-            print("we enter this layer")
             x, attn = encoder_layer(x, attention_mask, output_attentions=output_attentions)
-            print("we get new x: ", x)
 
         if output_attentions:
             all_attentions.append(attn)
 
     if self.layer_norm:
-        x = x.to(self.layer_norm.weight.device)
+        x = move_device(x, self.layer_norm.weight.device)
         x = self.layer_norm(x)
     if output_hidden_states:
         encoder_states.append(x)
@@ -237,8 +245,6 @@ def forward_decoder(
         encoder_padding_mask,
         decoder_padding_mask,
         decoder_causal_mask,
-        decoder_cached_states=None,
-        use_cache=False,
         output_attentions=False,
         output_hidden_states=False,
         **unused,
@@ -254,7 +260,6 @@ def forward_decoder(
         encoder_hidden_states: output from the encoder, used for
             encoder-side attention
         encoder_padding_mask: for ignoring pad tokens
-        decoder_cached_states (dict or None): dictionary used for storing state during generation
 
     Returns:
         tuple:
@@ -266,18 +271,7 @@ def forward_decoder(
     if encoder_padding_mask is not None:
         encoder_padding_mask = invert_mask(encoder_padding_mask)
 
-    # embed positions
-    positions = self.embed_positions(tgt_tokens, use_cache=use_cache)
-
-    if use_cache:
-        tgt_tokens = tgt_tokens[:, -1:]
-        positions = positions[:, -1:]  # happens after we embed them
-        # assert input_ids.ne(self.padding_idx).any()
-
-    x = self.embed_tokens(tgt_tokens) * self.embed_scale
-    x += positions
-    x = self.layernorm_embedding(x)
-    x = F.dropout(x, p=self.dropout, training=self.training)
+    x = forward_embedding(self=self, tokens=tgt_tokens)
 
     # Convert to Bart output format: (seq_len, BS, model_dim) -> (BS, seq_len, model_dim)
     x = x.transpose(0, 1)
@@ -286,16 +280,23 @@ def forward_decoder(
     # decoder layers
     all_hidden_states = ()
     all_self_attns = ()
-    next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
         # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
+        current_device = decoder_layer.fc1.weight.device
+
+        x = move_device(x, current_device)
+        encoder_padding_mask = move_device(encoder_padding_mask, current_device)
+        decoder_padding_mask = move_device(decoder_padding_mask, current_device)
+        encoder_hidden_states = move_device(encoder_hidden_states, current_device)
+        decoder_causal_mask  = move_device(decoder_causal_mask, current_device)
+
         if output_hidden_states:
             all_hidden_states += (x,)
         dropout_probability = random.uniform(0, 1)
         if self.training and (dropout_probability < self.layerdrop):
             continue
 
-        layer_state = decoder_cached_states[idx] if decoder_cached_states is not None else None
+        layer_state = None
 
         x, layer_self_attn, layer_past = decoder_layer(
             x,
@@ -307,10 +308,8 @@ def forward_decoder(
             output_attentions=output_attentions,
         )
 
-        if use_cache:
-            next_decoder_cache.append(layer_past.copy())
-
         if self.layer_norm and (idx == len(self.layers) - 1):  # last layer of mbart
+            x = move_device(x, self.layer_norm.weight.device)
             x = self.layer_norm(x)
         if output_attentions:
             all_self_attns += (layer_self_attn,)
@@ -318,13 +317,16 @@ def forward_decoder(
     # Convert to standard output format: (seq_len, BS, model_dim) -> (BS, seq_len, model_dim)
     all_hidden_states = [hidden_state.transpose(0, 1) for hidden_state in all_hidden_states]
     x = x.transpose(0, 1)
-    encoder_hidden_states = encoder_hidden_states.transpose(0, 1)
 
-    if use_cache:
-        next_cache = ((encoder_hidden_states, encoder_padding_mask), next_decoder_cache)
+    return x, all_hidden_states, list(all_self_attns)
+
+
+def move_device(tensor, device):
+    if tensor is None:
+        return None
     else:
-        next_cache = None
-    return x, next_cache, all_hidden_states, list(all_self_attns)
+        tensor = tensor.to(device)
+        return tensor
 
 
 def _prepare_bart_decoder_inputs(

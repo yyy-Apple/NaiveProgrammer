@@ -1,6 +1,6 @@
 import fire
 import os
-from models.bart import BART
+from models.distilbart import BART
 
 BATCH_SIZE = 32
 LR = 4e-5

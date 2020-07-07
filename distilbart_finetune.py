@@ -1,6 +1,8 @@
 import fire
 import os
-from models.bart import BART
+from models.distilbart import BART
+import logging
+logging.disable(logging.WARNING)
 
 BATCH_SIZE = 32
 LR = 4e-5
@@ -50,7 +52,7 @@ def main(n_epochs=5, src_max_length=1024, tgt_max_length=1024):
         print(f"On epoch {epoch}")
         bart.train_epoch(batch_size=BATCH_SIZE)
         current_loss = bart.evaluate()
-        print("current loss: ", current_loss)
+        print("current dev loss: ", current_loss)
         if current_loss < best_loss:
             best_loss = current_loss
             bart.save_model('bart_best.pth')

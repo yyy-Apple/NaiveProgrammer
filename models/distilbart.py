@@ -3,11 +3,11 @@ from collections import namedtuple
 import random
 from tqdm import tqdm, trange
 import os
-
 import torch
 from transformers import AdamW, get_linear_schedule_with_warmup
+from typing import List
 
-from .bart_utils import BARTMultiGPUWrapper
+from .distilbart_utils import BARTMultiGPUWrapper
 
 TextPairData = namedtuple('TextPairData', [
     'src_text', 'tgt_text', 'src_tokens', 'tgt_tokens'
@@ -54,6 +54,14 @@ class BART:
         print(f'Model {path} loaded.')
 
     def load_data(self, set_type, src_texts, tgt_texts):
+        # load data from pkl file if exists
+        if os.path.exists(f'data_{set_type}.pkl'):
+            with open(f'data_{set_type}.pkl', 'rb') as f:
+                self._dataset[set_type] = pickle.load(f)
+                print(f'Loading {set_type} data from data_{set_type}.pkl')
+                print(f'#{set_type}: {len(self._dataset[set_type])}')
+            return
+
         assert len(src_texts) == len(tgt_texts)
 
         self._dataset[set_type] = []
@@ -72,6 +80,10 @@ class BART:
 
         print(f'#{set_type}: {len(self._dataset[set_type])}')
 
+        # write file to disk if it's the first time
+        with open(f'data_{set_type}.pkl', 'wb') as f:
+            pickle.dump(self._dataset[set_type], f)
+
     def train_epoch(self, batch_size):
         assert 'train' in self._dataset
 
@@ -88,8 +100,8 @@ class BART:
             # we access the data one by one
             for j in range(0, len(batch)):
                 data = batch[j]
-                src_tokens = data.src_tokens.unsqueeze(0)
-                tgt_tokens = data.tgt_tokens.unsqueeze(0)
+                src_tokens = data.src_tokens
+                tgt_tokens = data.tgt_tokens
 
                 loss = self._get_seq2seq_loss(
                     src_tokens=src_tokens,
@@ -111,8 +123,8 @@ class BART:
         for i in range(0, len(self._dataset['val'])):
             data = self._dataset['val'][i]
 
-            src_tokens = data.src_tokens.unsqueeze(0)
-            tgt_tokens = data.tgt_tokens.unsqueeze(0)
+            src_tokens = data.src_tokens
+            tgt_tokens = data.tgt_tokens
 
             with torch.no_grad():
                 loss = self._get_seq2seq_loss(
@@ -124,8 +136,30 @@ class BART:
 
         return sum(loss_list) / len(loss_list)
 
-    def generate(self):
-        pass
+    def generate(self, src_sents: List[str], beam=4, lenpen=2.0, max_len=20,
+                 min_len=10, no_repeat_ngram_size=3):
+        self._bart.set_mode('infer')
+        self._bart.eval()
+
+        input_ids = self._bart.tokenizer(
+            src_sents,
+            max_length=self._src_max_length,
+            padding=True,
+            truncation=True,
+            return_tensors='pt'
+        )['input_ids']
+
+        summary_ids = self._bart.generate(
+            input_ids=input_ids,
+            max_length=max_len,
+            min_length=min_len,
+            num_beams=beam,
+            length_penalty=lenpen,
+            no_repeat_ngram_size=no_repeat_ngram_size
+        )
+        return [self._bart.tokenizer.decode(g, skip_special_tokens=True,
+                                            clean_up_tokenization_spaces=False).strip()
+                for g in summary_ids]
 
     def _get_seq2seq_loss(self, src_tokens, tgt_tokens):
         logits = self._bart(
