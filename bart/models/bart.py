@@ -50,7 +50,7 @@ class BART:
         self._eval_steps = eval_steps
         self._best_dev_loss = float('inf')
 
-        os.makedirs(os.path.join(self._log_dir, 'models'), exist_ok=True)
+        os.makedirs(os.path.join(self._log_dir, 'distilBart'), exist_ok=True)
         os.makedirs(os.path.join(self._log_dir, 'generations'), exist_ok=True)
         self._log_file = open(os.path.join(self._log_dir, 'log.txt'), 'w')
 
@@ -187,7 +187,7 @@ class BART:
 
         if eval_loss < self._best_dev_loss:
             self._best_dev_loss = eval_loss
-            self.save_model(f'{self._log_dir}/models/best_model.pt')
+            self.save_model(f'{self._log_dir}/distilBart/best_model.pt')
             print('Best Model Updated.', file=self._log_file)
 
         self._log_file.flush()

@@ -2,7 +2,7 @@ import fire
 import os
 from tqdm import trange
 
-from models.distilbart import BART
+from distilBart.distilbart import BART
 
 import logging
 logging.disable(logging.WARNING)

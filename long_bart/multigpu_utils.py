@@ -706,7 +706,7 @@ class SequenceGenerator(object):
         """Generate a batch of translations.
 
         Args:
-            models (List[~fairseq.models.FairseqModel]): ensemble of models
+            models (List[~fairseq.distilBart.FairseqModel]): ensemble of distilBart
             sample (dict): batch
             prefix_tokens (torch.LongTensor, optional): force decoder to begin
                 with these tokens
@@ -1149,7 +1149,7 @@ class SequenceGenerator(object):
 
 
 class EnsembleModel(torch.nn.Module):
-    """A wrapper around an ensemble of models."""
+    """A wrapper around an ensemble of distilBart."""
 
     def __init__(self, models):
         super().__init__()

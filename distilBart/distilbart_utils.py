@@ -84,23 +84,20 @@ class BARTMultiGPUWrapper(nn.Module):
         self._mode = mode
 
     def encode(self, sentence, max_length=1024):
-        # tokens = self._tokenizer([sentence], return_tensors='pt')['input_ids'][0].tolist()
-        # while len(tokens) > max_length:
-        #     # cut sentence to max length, keep the eos token
-        #     tokens = tokens[:-2] + tokens[-1:]
-        # return torch.tensor(tokens).long()
-
+        """ encode partial text """
         return self._tokenizer([sentence], max_length=max_length,
                                truncation=True, return_tensors='pt')['input_ids']
 
-    def encode_long(self, sentence):
-        """ encode full text """
-        # TODO: Finish this method
+    def encode_long(self, sentence, max_length=1024):
+        """ encode full text using chunking"""
         return_list = []
         token_list = self._tokenizer([sentence], return_tensors='pt')['input_ids'][0].tolist()
-        pass
+        for i in range(0, len(token_list), max_length):
+            return_list.append(torch.tensor(token_list[i: i + max_length]).long().unsqueeze(0))
+        return return_list
 
     def forward(self, src_tokens, prev_output_tokens):
+        """ forward partial text """
         attention_mask = src_tokens.ne(self.config.pad_token_id)
 
         _, decoder_padding_mask, causal_mask = _prepare_bart_decoder_inputs(
@@ -128,6 +125,45 @@ class BARTMultiGPUWrapper(nn.Module):
         lm_logits = F.linear(x, self.model.shared.weight, bias=self._interface.final_logits_bias)
 
         return lm_logits
+
+    def forward_long(self, src_list, prev_output_tokens):
+        encoder_out_list = []
+        for src_tokens in src_list:
+            attention_mask = src_tokens.ne(self.config.pad_token_id)
+            individual_encoder_out, _, _ = forward_encoder(
+                self=self.encoder,
+                src_tokens=src_tokens,
+                attention_mask=attention_mask
+            )
+            encoder_out_list.append(individual_encoder_out)
+        encoder_out = torch.cat(encoder_out_list, dim=1)
+
+        src_tokens = torch.cat(src_list, dim=1)
+
+        attention_mask = src_tokens.ne(self.config.pad_token_id)
+        _, decoder_padding_mask, causal_mask = _prepare_bart_decoder_inputs(
+            config=self.config,
+            input_ids=src_tokens,
+            decoder_input_ids=prev_output_tokens,
+            causal_mask_dtype=self.model.shared.weight.dtype,
+        )
+
+        x, _, _ = forward_decoder(
+            self=self.decoder,
+            tgt_tokens=prev_output_tokens,
+            encoder_hidden_states=encoder_out,
+            encoder_padding_mask=attention_mask,
+            decoder_padding_mask=decoder_padding_mask,
+            decoder_causal_mask=causal_mask
+        )
+
+        lm_logits = F.linear(x, self.model.shared.weight, bias=self._interface.final_logits_bias)
+
+        return lm_logits
+
+    def long_input_generate(self):
+        # TODO: Finish this method
+        pass
 
     @property
     def generate(self):

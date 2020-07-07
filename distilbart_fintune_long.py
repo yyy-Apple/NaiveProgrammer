@@ -13,7 +13,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = "2,3"
 
 
 def load_data(split):
-    src_file = open(f'data/full_text.{split}')
+    src_file = open(f'data/fulltext.{split}')
     tgt_file = open(f'data/review.{split}')
     src_texts, tgt_texts = [], []
     for src, tgt in zip(src_file.readlines(), tgt_file.readlines()):
@@ -22,20 +22,20 @@ def load_data(split):
     return src_texts, tgt_texts
 
 
-def main(n_epochs=5, src_max_length=1024, tgt_max_length=1024):
+def main(n_epochs=3, src_max_length=1024, tgt_max_length=1024):
     bart = BART(
-        device='cuda',
+        device='cpu',
         src_max_length=src_max_length,
         tgt_max_length=tgt_max_length)
 
     for split in ['train', 'val']:
         src_texts, tgt_texts = load_data(split)
-        bart.load_data(
+        bart.load_long_data(
             set_type=split,
             src_texts=src_texts,
             tgt_texts=tgt_texts)
 
-    train_steps = n_epochs * (len(bart.train_dataset) // BATCH_SIZE + 1)
+    train_steps = n_epochs * (len(bart.train_long_dataset) // BATCH_SIZE + 1)
     warmup_steps = int(train_steps * WARMUP_PROPORTION)
     bart.get_optimizer(
         lr=LR,
@@ -48,12 +48,12 @@ def main(n_epochs=5, src_max_length=1024, tgt_max_length=1024):
 
     for epoch in range(n_epochs):
         print(f"On epoch {epoch}")
-        bart.train_epoch(batch_size=BATCH_SIZE)
-        bart.save_model(f'bart_epoch{epoch}.pth')
-        current_loss = bart.evaluate()
+        bart.train_long_epoch(batch_size=BATCH_SIZE)
+        # bart.save_model(f'bart_long_epoch{epoch}.pth')
+        current_loss = bart.evaluate_long()
         if current_loss < best_loss:
             best_loss = current_loss
-            bart.save_model('bart_best.pth')
+            bart.save_model('distilbart_long_best.pth')
 
 
 if __name__ == '__main__':

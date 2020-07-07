@@ -27,6 +27,7 @@ class BART:
         self._lr_scheduler = None
 
         self._dataset = {}
+        self._long_dataset = {}
         self._best_dev_loss = None
 
     def get_optimizer(self, lr, train_steps, warmup_steps,
@@ -84,12 +85,40 @@ class BART:
         with open(f'data_{set_type}.pkl', 'wb') as f:
             pickle.dump(self._dataset[set_type], f)
 
+    def load_long_data(self, set_type, src_texts, tgt_texts):
+        if os.path.exists(f'long_data_{set_type}.pkl'):
+            with open(f'long_data_{set_type}.pkl', 'rb') as f:
+                self._long_dataset[set_type] = pickle.load(f)
+                print(f'Loading {set_type} data from long_data_{set_type}.pkl')
+                print(f'#{set_type}: {len(self._long_dataset[set_type])}')
+            return
+
+        assert len(src_texts) == len(tgt_texts)
+
+        self._long_dataset[set_type] = []
+        for src_text, tgt_text in tqdm(zip(src_texts, tgt_texts),
+                                       total=len(src_texts),
+                                       desc=f'loading {set_type} data'):
+            src_token_list = self._bart.encode_long(src_text)
+            tgt_tokens = self._bart.encode(tgt_text, self._tgt_max_length)
+
+            self._long_dataset[set_type].append(TextPairData(
+                src_text=src_text,
+                tgt_text=tgt_text,
+                src_tokens=src_token_list,
+                tgt_tokens=tgt_tokens
+            ))
+        print(f'#{set_type}: {len(self._long_dataset[set_type])}')
+
+        with open(f'long_data_{set_type}.pkl', 'wb') as f:
+            pickle.dump(self._long_dataset[set_type], f)
+
     def train_epoch(self, batch_size):
         assert 'train' in self._dataset
 
         random.shuffle(self._dataset['train'])
         for i in trange(0, len(self._dataset['train']), batch_size,
-                        desc='BART Training'):
+                        desc='DistilBART Training'):
             self._bart.set_mode('train')
             self._bart.train()
 
@@ -106,6 +135,37 @@ class BART:
                 loss = self._get_seq2seq_loss(
                     src_tokens=src_tokens,
                     tgt_tokens=tgt_tokens
+                )
+
+                loss = loss / batch_size
+                loss.backward()
+
+            self._optimizer.step()
+            self._lr_scheduler.step()
+
+    def train_long_epoch(self, batch_size):
+        assert 'train' in self._long_dataset
+
+        random.shuffle(self._long_dataset['train'])
+        for i in trange(0, len(self._long_dataset['train']), batch_size,
+                        desc='DistilBART Training'):
+            self._bart.set_mode('train')
+            self._bart.train()
+
+            batch = self._long_dataset['train'][i:i + batch_size]
+
+            self._optimizer.zero_grad()
+
+            # we access the data one by one
+            for j in range(0, len(batch)):
+                data = batch[j]
+                src_tokens = data.src_tokens
+                tgt_tokens = data.tgt_tokens
+
+                loss = self._get_seq2seq_loss(
+                    src_tokens=src_tokens,
+                    tgt_tokens=tgt_tokens,
+                    long=True
                 )
 
                 loss = loss / batch_size
@@ -136,6 +196,28 @@ class BART:
 
         return sum(loss_list) / len(loss_list)
 
+    def evaluate_long(self):
+        assert 'val' in self._long_dataset
+        self._bart.set_mode('train')
+        self._bart.eval()
+
+        loss_list = []
+        for i in range(0, len(self._long_dataset['val'])):
+            data = self._long_dataset['val'][i]
+
+            src_tokens = data.src_tokens
+            tgt_tokens = data.tgt_tokens
+
+            with torch.no_grad():
+                loss = self._get_seq2seq_loss(
+                    src_tokens=src_tokens,
+                    tgt_tokens=tgt_tokens,
+                    long=True
+                )
+            loss_list.append(loss.item())
+
+        return sum(loss_list) / len(loss_list)
+
     def generate(self, src_sents: List[str], beam=4, lenpen=2.0, max_len=20,
                  min_len=10, no_repeat_ngram_size=3):
         self._bart.set_mode('infer')
@@ -161,11 +243,21 @@ class BART:
                                             clean_up_tokenization_spaces=False).strip()
                 for g in summary_ids]
 
-    def _get_seq2seq_loss(self, src_tokens, tgt_tokens):
-        logits = self._bart(
-            src_tokens=src_tokens,
-            prev_output_tokens=tgt_tokens
-        )
+    def long_input_generate(self):
+        # TODO: Finish this method
+        pass
+
+    def _get_seq2seq_loss(self, src_tokens, tgt_tokens, long=False):
+        if long:
+            logits = self._bart.forward_long(
+                src_list=src_tokens,
+                prev_output_tokens=tgt_tokens
+            )
+        else:
+            logits = self._bart(
+                src_tokens=src_tokens,
+                prev_output_tokens=tgt_tokens
+            )
 
         tgt_tokens = tgt_tokens.to(logits.device)
 
@@ -188,3 +280,11 @@ class BART:
     @property
     def train_dataset(self):
         return self._dataset['train']
+
+    @property
+    def long_dataset(self):
+        return self._long_dataset
+
+    @property
+    def train_long_dataset(self):
+        return self._long_dataset['train']

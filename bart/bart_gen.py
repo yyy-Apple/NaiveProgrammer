@@ -2,7 +2,7 @@ import fire
 import os
 from tqdm import trange
 
-from models.distilbart import BART
+from distilBart.distilbart import BART
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
