@@ -218,8 +218,9 @@ class BART:
 
         return sum(loss_list) / len(loss_list)
 
-    def generate(self, src_sents: List[str], beam=4, lenpen=2.0, max_len=20,
-                 min_len=10, no_repeat_ngram_size=3):
+    def generate(self, src_sents: List[str], beam=4, lenpen=2.0, max_len=1024,
+                 min_len=100, no_repeat_ngram_size=3):
+        # when do generation, we run on one gpu
         self._bart.set_mode('infer')
         self._bart.eval()
 
@@ -229,7 +230,7 @@ class BART:
             padding=True,
             truncation=True,
             return_tensors='pt'
-        )['input_ids']
+        )['input_ids'].to(self._device)
 
         summary_ids = self._bart.generate(
             input_ids=input_ids,
