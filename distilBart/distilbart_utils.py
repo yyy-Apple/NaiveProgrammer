@@ -1,12 +1,12 @@
+# Adapted from https://github.com/huggingface/transformers/blob/master/src/transformers/modeling_bart.py
 import random
-from typing import Optional, Iterable
-import sys
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from transformers import BartTokenizer, BartForConditionalGeneration
-
 from .generation_utils import *
+
+HIDDEN_SIZE = 1024
+LABEL_NUM = 16
 
 
 class BARTMultiGPUWrapper(nn.Module):
@@ -22,6 +22,12 @@ class BARTMultiGPUWrapper(nn.Module):
         self._interface = BartForConditionalGeneration.from_pretrained('sshleifer/distilbart-cnn-6-6')
         self._tokenizer = BartTokenizer.from_pretrained('sshleifer/distilbart-cnn-6-6')
 
+        self._label_output_layer = nn.Linear(HIDDEN_SIZE, LABEL_NUM)
+
+        # initialize the label output layer
+        self._label_output_layer.weight.data.normal_(mean=0.0, std=0.02)
+
+        self.pad_label_index = -100
         self._mode = None
 
     def set_mode(self, mode):
@@ -76,6 +82,9 @@ class BARTMultiGPUWrapper(nn.Module):
         self._interface.final_logits_bias = move_device(
             self._interface.final_logits_bias, self._device_decoder2)
         self.model.shared = move_device(self.model.shared, self._device_decoder2)
+
+        # for calculating sequence labeling output
+        
 
         torch.cuda.empty_cache()
 
@@ -145,6 +154,7 @@ class BARTMultiGPUWrapper(nn.Module):
         return encoder_out
 
     def forward_long(self, src_list, prev_output_tokens):
+        # forward full text using chunking
         encoder_out = self.get_encoder_out(src_list)
 
         src_tokens = torch.cat(src_list, dim=1)
@@ -170,23 +180,16 @@ class BARTMultiGPUWrapper(nn.Module):
 
         return lm_logits
 
-    def long_input_generate(self, src_sents, max_length=20, min_length=10, num_beams=4, length_penalty=2.0,
-                            no_repeat_ngram_size=3):
-        # TODO: Finish this method
+    def long_input_generate(self, src_sent: str, max_length, min_length, num_beams,
+                            length_penalty, no_repeat_ngram_size):
         self.set_mode('infer')
         self._interface.eval()
 
-        input_ids = self._tokenizer(
-            src_sents,
-            max_length=1024,
-            padding=True,
-            truncation=True,
-            return_tensors='pt'
-        )['input_ids'].to(self._device)
+        src_list = self.encode_long(src_sent)
 
         summary_ids = long_input_generate(
-            self=self._interface,
-            input_ids=input_ids,
+            self=self,
+            src_list=src_list,
             max_length=max_length,
             min_length=min_length,
             num_beams=num_beams,
@@ -443,47 +446,25 @@ def fill_with_neg_inf(t):
 # ===================================================== #
 #                      Generation                       #
 # ===================================================== #
-
 @torch.no_grad()
-def long_input_generate(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        max_length: Optional[int] = None,
-        min_length: Optional[int] = None,
-        num_beams: Optional[int] = None,
-        length_penalty: Optional[float] = None,
-        no_repeat_ngram_size: Optional[int] = None,
-        **model_specific_kwargs
-) -> torch.LongTensor:
-    pad_token_id = self.config.pad_token_id
-    decoder_start_token_id = self.config.decoder_start_token_id
-
-    # here the input_ids should be the paper full text.
-    if input_ids is not None:
-        batch_size = input_ids.shape[0]
-    else:
-        batch_size = 1
-
-    # create attention mask if necessary
-    # TODO (PVP): this should later be handled by the forward fn() in each model in the future see PR 3140
-    attention_mask = None
-    if (attention_mask is None) and (pad_token_id is not None) and (pad_token_id in input_ids):
-        attention_mask = input_ids.ne(pad_token_id).long()
-    elif attention_mask is None:
-        attention_mask = input_ids.new_ones(input_ids.shape)
+def long_input_generate(self: BARTMultiGPUWrapper, src_list, max_length,
+                        min_length, num_beams, length_penalty,
+                        no_repeat_ngram_size, **model_specific_kwargs) -> torch.LongTensor:
+    batch_size = 1
 
     effective_batch_size = batch_size
     effective_batch_mult = 1
 
-    # get encoder and store encoder outputs
-    encoder = self.get_encoder()
-
-    # TODO: This should be forward long version
     # Here the input_ids is used to get the encoder output
-    encoder_outputs: tuple = encoder(input_ids, attention_mask=attention_mask)
+    encoder_outputs = self.get_encoder_out(src_list)
+    input_ids = torch.cat(src_list, dim=1)
+    input_ids_len = encoder_outputs.shape[1]
+    attention_mask = input_ids.ne(self.config.pad_token_id).long()
+
+    encoder_outputs = (encoder_outputs, [], [])
 
     # Expand input ids if num_beams > 1 or num_return_sequences > 1
-    input_ids_len = input_ids.shape[-1]
+
     attention_mask = attention_mask.unsqueeze(1).expand(
         batch_size, effective_batch_mult * num_beams, input_ids_len
     )
@@ -494,15 +475,11 @@ def long_input_generate(
     # create empty decoder_input_ids
     input_ids = torch.full(
         (effective_batch_size * num_beams, 1),
-        decoder_start_token_id,
+        self.config.decoder_start_token_id,
         dtype=torch.long,
-        device=next(self.parameters()).device,
+        device=next(self._interface.parameters()).device,
     )
     cur_len = 1
-
-    assert (
-            batch_size == encoder_outputs[0].shape[0]
-    ), f"expected encoder_outputs[0] to have 1st dimension bs={batch_size}, got {encoder_outputs[0].shape[0]} "
 
     # expand batch_idx to assign correct encoder output for expanded input_ids (due to num_beams > 1 and
     # num_return_sequences > 1)
@@ -523,7 +500,6 @@ def long_input_generate(
         max_length=max_length,
         min_length=min_length,
         no_repeat_ngram_size=no_repeat_ngram_size,
-        pad_token_id=pad_token_id,
         batch_size=effective_batch_size,
         length_penalty=length_penalty,
         num_beams=num_beams,
@@ -536,9 +512,9 @@ def long_input_generate(
 
 
 def _generate_beam_search(self, input_ids, cur_len, max_length, min_length,
-                          no_repeat_ngram_size, pad_token_id, batch_size,
-                          length_penalty, num_beams, encoder_outputs,
-                          attention_mask, model_specific_kwargs):
+                          no_repeat_ngram_size, batch_size, length_penalty,
+                          num_beams, encoder_outputs, attention_mask,
+                          model_specific_kwargs):
     """ Generate sequences for each example with beam search.
     """
     # Configuration
@@ -546,6 +522,7 @@ def _generate_beam_search(self, input_ids, cur_len, max_length, min_length,
     use_cache = self.config.use_cache
     bad_words_ids = self.config.bad_words_ids
     eos_token_id = self.config.eos_token_id
+    pad_token_id = self.config.pad_token_id
     repetition_penalty = self.config.repetition_penalty
     vocab_size = self.config.vocab_size
     num_return_sequences = self.config.num_return_sequences
@@ -572,21 +549,18 @@ def _generate_beam_search(self, input_ids, cur_len, max_length, min_length,
 
     while cur_len < max_length:
         # this prepare inputs for generation is different than the one above
-        model_inputs = self.prepare_inputs_for_generation(
+        model_inputs = self._interface.prepare_inputs_for_generation(
             input_ids, past=past, attention_mask=attention_mask, use_cache=use_cache, **model_specific_kwargs
         )
-        print(model_inputs)
-        print(model_inputs.get('encoder_outputs')[0].shape)
-        sys.exit(0)
-        outputs = self(**model_inputs)  # (batch_size * num_beams, cur_len, vocab_size)
+
+        outputs = self._interface(**model_inputs)  # (batch_size * num_beams, cur_len, vocab_size)
         next_token_logits = outputs[0][:, -1, :]  # (batch_size * num_beams, vocab_size)
 
         # if model has past, then set the past variable to speed up decoding
-        if self._use_cache(outputs, use_cache):
+        if use_cache(self, outputs, use_cache):
             past = outputs[1]
         if self.config.is_encoder_decoder:
-            # TODO (PVP) still a bit hacky here - there might be a better solution
-            next_token_logits = self.adjust_logits_during_generation(
+            next_token_logits = self._interface.adjust_logits_during_generation(
                 next_token_logits, cur_len=cur_len, max_length=max_length
             )
 
@@ -606,10 +580,6 @@ def _generate_beam_search(self, input_ids, cur_len, max_length, min_length,
             num_beams=num_beams,
         )
 
-        assert scores.shape == (batch_size * num_beams, vocab_size), "Shapes of scores: {} != {}".format(
-            scores.shape, (batch_size * num_beams, vocab_size)
-        )
-
         # We don't do sample
         next_scores = scores + beam_scores[:, None].expand_as(scores)  # (batch_size * num_beams, vocab_size)
 
@@ -619,8 +589,6 @@ def _generate_beam_search(self, input_ids, cur_len, max_length, min_length,
         )  # (batch_size, num_beams * vocab_size)
 
         next_scores, next_tokens = torch.topk(next_scores, 2 * num_beams, dim=1, largest=True, sorted=True)
-
-        assert next_scores.size() == next_tokens.size() == (batch_size, 2 * num_beams)
 
         # next batch beam content
         next_batch_beam = []
@@ -695,7 +663,7 @@ def _generate_beam_search(self, input_ids, cur_len, max_length, min_length,
 
         # re-order internal states
         if past is not None:
-            past = self._reorder_cache(past, beam_idx)
+            past = self._interface._reorder_cache(past, beam_idx)
 
         # extend attention_mask for new generated input if only decoder
         if self.config.is_encoder_decoder is False:
@@ -757,6 +725,6 @@ def _generate_beam_search(self, input_ids, cur_len, max_length, min_length,
     else:
         # none of the hypotheses have an eos_token
         assert (len(hypo) == max_length for hypo in best)
-        decoded = torch.stack(best).type(torch.long).to(next(self.parameters()).device)
+        decoded = torch.stack(best).type(torch.long).to(next(self._interface.parameters()).device)
 
     return decoded

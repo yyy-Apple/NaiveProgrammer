@@ -10,7 +10,7 @@ from torch.nn import functional as F
 logger = logging.getLogger(__name__)
 
 
-def _use_cache(self, outputs, use_cache):
+def use_cache(self, outputs, use_cache):
     """During generation, decide whether to pass the `past` variable to the next forward pass."""
     if len(outputs) <= 1 or use_cache is False:
         return False
@@ -77,17 +77,14 @@ def postprocess_next_token_scores(
     return scores
 
 
-def _reorder_cache(past: Tuple, beam_idx: Tensor) -> Tuple[Tensor]:
-    return tuple(layer_past.index_select(1, beam_idx) for layer_past in past)
-
-
 def calc_banned_ngram_tokens(prev_input_ids: Tensor, num_hypos: int, no_repeat_ngram_size: int, cur_len: int):
     """
+    Copied from fairseq for no_repeat_ngram in beam_search.
+
     Example:
         prev_input_ids = torch.tensor([[1, 2, 3, 1, 2, 4, 1, 2], [2, 3, 4, 2, 3, 3, 2, 3]])
         out = [[3, 4], [4, 3]]
     """
-    """Copied from fairseq for no_repeat_ngram in beam_search"""
     if cur_len + 1 < no_repeat_ngram_size:
         # return no banned tokens if we haven't generated no_repeat_ngram_size tokens yet
         return [[] for _ in range(num_hypos)]

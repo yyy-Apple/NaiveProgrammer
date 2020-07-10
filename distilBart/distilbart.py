@@ -118,7 +118,7 @@ class BART:
 
         random.shuffle(self._dataset['train'])
         for i in trange(0, len(self._dataset['train']), batch_size,
-                        desc='DistilBART Training'):
+                        desc='BART Training'):
             self._bart.set_mode('train')
             self._bart.train()
 
@@ -148,7 +148,7 @@ class BART:
 
         random.shuffle(self._long_dataset['train'])
         for i in trange(0, len(self._long_dataset['train']), batch_size,
-                        desc='DistilBART Training'):
+                        desc='BART Training'):
             self._bart.set_mode('train')
             self._bart.train()
 
@@ -244,9 +244,20 @@ class BART:
                                             clean_up_tokenization_spaces=False).strip()
                 for g in summary_ids]
 
-    def long_input_generate(self):
-        # TODO: Finish this method
-        pass
+    def long_input_generate(self, src_sent: str, beam=4, lenpen=2.0, max_len=1024,
+                            min_len=100, no_repeat_ngram_size=3):
+        self._bart.set_mode('infer')
+        self._bart.eval()
+
+        output = self._bart.long_input_generate(
+            src_sent=src_sent,
+            max_length=max_len,
+            min_length=min_len,
+            num_beams=beam,
+            length_penalty=lenpen,
+            no_repeat_ngram_size=no_repeat_ngram_size
+        )
+        return output
 
     def _get_seq2seq_loss(self, src_tokens, tgt_tokens, long=False):
         if long:
