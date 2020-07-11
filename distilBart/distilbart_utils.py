@@ -597,7 +597,7 @@ def _generate_beam_search(self, input_ids, cur_len, max_length, min_length,
         next_token_logits = outputs[0][:, -1, :]  # (batch_size * num_beams, vocab_size)
 
         # if model has past, then set the past variable to speed up decoding
-        if use_cache(self, outputs, use_cache):
+        if to_use_cache(self, outputs, use_cache):
             past = outputs[1]
         if self.config.is_encoder_decoder:
             next_token_logits = self._interface.adjust_logits_during_generation(

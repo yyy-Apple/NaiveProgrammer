@@ -10,7 +10,7 @@ from torch.nn import functional as F
 logger = logging.getLogger(__name__)
 
 
-def use_cache(self, outputs, use_cache):
+def to_use_cache(self, outputs, use_cache):
     """During generation, decide whether to pass the `past` variable to the next forward pass."""
     if len(outputs) <= 1 or use_cache is False:
         return False
